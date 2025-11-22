@@ -1,0 +1,871 @@
+#!/usr/bin/env bash
+# =============================================
+# XIOPS - Project-Agnostic Deployment CLI
+# Build and deploy applications to Azure (ACR + AKS)
+# =============================================
+
+set -euo pipefail
+
+VERSION="1.0.0"
+
+# Get the directory where xiops is installed
+XIOPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source library files
+source "${XIOPS_DIR}/lib/utils.sh"
+source "${XIOPS_DIR}/lib/config.sh"
+source "${XIOPS_DIR}/lib/acr.sh"
+source "${XIOPS_DIR}/lib/aks.sh"
+source "${XIOPS_DIR}/lib/keyvault.sh"
+source "${XIOPS_DIR}/lib/kubectl.sh"
+
+# =============================================
+# Help text
+# =============================================
+show_help() {
+    echo ""
+    echo -e "${BOLD}${CYAN}XIOPS${NC} - Project-Agnostic Deployment CLI for Azure"
+    echo -e "${DIM}Version ${VERSION}${NC}"
+    echo ""
+    echo -e "${BOLD}USAGE:${NC}"
+    echo "    xiops <command> [options]"
+    echo ""
+    echo -e "${BOLD}COMMANDS:${NC}"
+    echo -e "    ${CYAN}build${NC}       Build and push Docker image to ACR"
+    echo -e "    ${CYAN}deploy${NC}      Deploy to AKS cluster"
+    echo -e "    ${CYAN}release${NC}     Build and deploy (build + deploy)"
+    echo -e "    ${CYAN}status${NC}      Show current deployment status"
+    echo -e "    ${CYAN}logs${NC}        Stream pod logs"
+    echo -e "    ${CYAN}rollback${NC}    Rollback to previous deployment"
+    echo -e "    ${CYAN}restart${NC}     Restart the deployment"
+    echo -e "    ${CYAN}shell${NC}       Get shell access to pod"
+    echo -e "    ${CYAN}init${NC}        Initialize .env template"
+    echo -e "    ${CYAN}config${NC}      Show current configuration"
+    echo ""
+    echo -e "${BOLD}KEY VAULT COMMANDS:${NC}"
+    echo -e "    ${CYAN}secret list${NC}     List secrets in Key Vault"
+    echo -e "    ${CYAN}secret get${NC}      Get a secret value"
+    echo -e "    ${CYAN}secret set${NC}      Set a secret value"
+    echo -e "    ${CYAN}secret delete${NC}   Delete a secret"
+    echo -e "    ${CYAN}secret info${NC}     Show secret metadata"
+    echo -e "    ${CYAN}secret sync${NC}     Sync .env secrets to Key Vault"
+    echo -e "    ${CYAN}secret export${NC}   Export secrets to .env format"
+    echo ""
+    echo -e "${BOLD}KUBECTL COMMANDS:${NC} ${DIM}(xiops k <cmd>)${NC}"
+    echo -e "    ${CYAN}k pods${NC}          List pods"
+    echo -e "    ${CYAN}k services${NC}      List services"
+    echo -e "    ${CYAN}k deployments${NC}   List deployments"
+    echo -e "    ${CYAN}k logs${NC}          Get logs from all pods"
+    echo -e "    ${CYAN}k exec${NC}          Exec into a pod"
+    echo -e "    ${CYAN}k describe${NC}      Describe pod/deployment/service"
+    echo -e "    ${CYAN}k events${NC}        Get cluster events"
+    echo -e "    ${CYAN}k scale${NC}         Scale deployment"
+    echo -e "    ${CYAN}k port-forward${NC}  Port forward to service"
+    echo -e "    ${CYAN}k watch${NC}         Watch pods in real-time"
+    echo -e "    ${CYAN}k debug${NC}         Debug/troubleshoot a pod"
+    echo -e "    ${CYAN}k top${NC}           Show resource usage"
+    echo -e "    ${CYAN}k restart${NC}       Rolling restart"
+    echo -e "    ${CYAN}k history${NC}       Rollout history"
+    echo -e "    ${CYAN}k undo${NC}          Undo rollout"
+    echo ""
+    echo -e "${BOLD}OPTIONS:${NC}"
+    echo "    -h, --help      Show this help message"
+    echo "    -v, --version   Show version"
+    echo "    -t, --tag TAG   Specify image tag (overrides .env)"
+    echo ""
+    echo -e "${BOLD}EXAMPLES:${NC}"
+    echo "    xiops build            # Build with interactive tag prompt"
+    echo "    xiops build -t v10     # Build with specific tag"
+    echo "    xiops deploy           # Deploy using IMAGE_TAG from .env"
+    echo "    xiops release          # Build and deploy in one command"
+    echo "    xiops logs             # Stream logs from pods"
+    echo "    xiops rollback         # Rollback to previous version"
+    echo ""
+    echo -e "${BOLD}KEY VAULT EXAMPLES:${NC}"
+    echo "    xiops secret list              # List all secrets"
+    echo "    xiops secret get DB_PASSWORD   # Get secret value"
+    echo "    xiops secret set API_KEY xxx   # Set secret value"
+    echo "    xiops secret sync              # Sync .env to Key Vault"
+    echo ""
+    echo -e "${BOLD}KUBECTL EXAMPLES:${NC}"
+    echo "    xiops k pods                   # List all pods"
+    echo "    xiops k logs                   # Get logs from all pods"
+    echo "    xiops k exec                   # Exec into pod"
+    echo "    xiops k scale 3                # Scale to 3 replicas"
+    echo "    xiops k port-forward 8080 80   # Forward local:8080 to pod:80"
+    echo "    xiops k debug                  # Debug/troubleshoot pod"
+    echo ""
+    echo -e "${BOLD}CONFIGURATION:${NC}"
+    echo "    XIOPS reads configuration from .env file in your project."
+    echo "    Run 'xiops init' to create a template .env file."
+    echo ""
+    echo -e "${DIM}Required .env variables:${NC}"
+    echo "    SERVICE_NAME        - Name of your service"
+    echo "    ACR_NAME            - Azure Container Registry name"
+    echo "    AKS_CLUSTER_NAME    - AKS cluster name (for deploy)"
+    echo "    RESOURCE_GROUP      - Azure resource group (for deploy)"
+    echo "    NAMESPACE           - Kubernetes namespace (for deploy)"
+    echo "    KEY_VAULT_NAME      - Azure Key Vault name (for secrets)"
+    echo ""
+}
+
+# =============================================
+# Version
+# =============================================
+show_version() {
+    echo "xiops version ${VERSION}"
+}
+
+# =============================================
+# Build command
+# =============================================
+cmd_build() {
+    local tag="${OPT_TAG:-}"
+
+    print_header "🐳 XIOPS - Build & Push"
+
+    # Load and validate config
+    load_env || exit 1
+    validate_for_build || exit 1
+
+    # Check dependencies
+    check_dependencies || exit 1
+
+    # Show current status and get deployed tag
+    local current_tag
+    current_tag=$(show_deployment_status)
+
+    # Prompt for tag if not provided
+    if [[ -z "$tag" ]]; then
+        tag=$(prompt_image_tag "$current_tag")
+    fi
+
+    echo ""
+    print_success "Using image tag: ${tag}"
+
+    # Update .env with new tag
+    update_env "IMAGE_TAG" "$tag"
+
+    # Show build configuration
+    print_section "📋 Build Configuration"
+    echo ""
+    print_box_start
+    print_box_title "Build Details"
+    print_box_empty
+    print_box_line "ACR" "$ACR_NAME"
+    print_box_line "Service" "$SERVICE_NAME"
+    print_box_line "Tag" "$tag"
+    print_box_line "Platform" "linux/amd64"
+    print_box_empty
+    echo -e "   ${GRAY}│${NC} ${BOLD}${MAGENTA}Full Image:${NC}"
+    echo -e "   ${GRAY}│${NC}  ${CYAN}$(get_full_image_path "$tag")${NC}"
+    print_box_end
+    echo ""
+
+    # Confirm
+    if ! confirm "Proceed with build?"; then
+        print_warning "Build cancelled by user"
+        exit 0
+    fi
+
+    echo ""
+
+    # Build and push
+    acr_build_and_push "$tag" || exit 1
+
+    # Success
+    print_success_banner "BUILD & PUSH SUCCESSFUL"
+
+    echo -e "   ${BOLD}${WHITE}Built Images:${NC}"
+    echo -e "   ${CYAN}$(get_full_image_path "$tag")${NC}"
+    echo -e "   ${CYAN}$(get_image_repository):latest${NC}"
+    echo ""
+    echo -e "${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${DIM}Build completed at $(timestamp)${NC}"
+    echo -e "${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+
+    # Prompt to deploy
+    print_section "🚀 Deploy to Kubernetes?"
+    echo ""
+    print_box_start
+    print_box_title "Deployment Details"
+    print_box_empty
+    print_box_line "Image" "$(get_full_image_path "$tag")"
+    print_box_line "Cluster" "${AKS_CLUSTER_NAME:-not configured}"
+    print_box_line "Namespace" "${NAMESPACE:-not configured}"
+    if [[ -n "$current_tag" ]]; then
+        print_box_empty
+        echo -e "   ${GRAY}│${NC}  ${DIM}Current:${NC}    ${YELLOW}${current_tag}${NC} → ${GREEN}${tag}${NC}"
+    fi
+    print_box_end
+    echo ""
+
+    if confirm "Start deployment now?"; then
+        echo ""
+        cmd_deploy "$tag"
+    else
+        echo ""
+        print_info "Deployment skipped"
+        echo ""
+        print_box_start
+        echo -e "   ${GRAY}│${NC} ${BOLD}${MAGENTA}Manual Deployment Commands${NC}"
+        print_box_empty
+        echo -e "   ${GRAY}│${NC}  ${DIM}Option 1: Run xiops deploy${NC}"
+        echo -e "   ${GRAY}│${NC}  ${CYAN}xiops deploy${NC}"
+        print_box_empty
+        echo -e "   ${GRAY}│${NC}  ${DIM}Option 2: Use specific tag${NC}"
+        echo -e "   ${GRAY}│${NC}  ${CYAN}xiops deploy -t ${tag}${NC}"
+        print_box_end
+        echo ""
+    fi
+}
+
+# =============================================
+# Deploy command
+# =============================================
+cmd_deploy() {
+    local tag="${1:-${OPT_TAG:-}}"
+
+    print_header "🚀 XIOPS - AKS Deployment"
+
+    # Load and validate config
+    load_env || exit 1
+    validate_for_deploy || exit 1
+
+    # Check dependencies
+    check_dependencies || exit 1
+
+    # Use provided tag or fall back to .env
+    if [[ -z "$tag" ]]; then
+        tag="${IMAGE_TAG:-}"
+    fi
+
+    if [[ -z "$tag" ]]; then
+        print_error "No image tag specified"
+        print_info "Use -t flag or set IMAGE_TAG in .env"
+        exit 1
+    fi
+
+    # Show deployment configuration
+    print_section "📋 Deployment Configuration"
+    echo ""
+    print_box_start
+    print_box_title "Azure Resources"
+    print_box_empty
+    print_box_line "Resource Group" "$RESOURCE_GROUP"
+    print_box_line "AKS Cluster" "$AKS_CLUSTER_NAME"
+    print_box_line "ACR" "$ACR_NAME"
+    if [[ -n "${KEY_VAULT_NAME:-}" ]]; then
+        print_box_line "Key Vault" "$KEY_VAULT_NAME"
+    fi
+    print_box_empty
+    print_box_title "Kubernetes"
+    print_box_empty
+    print_box_line "Namespace" "$NAMESPACE"
+    print_box_line "Service" "$SERVICE_NAME"
+    print_box_empty
+    print_box_title "Docker Image"
+    print_box_empty
+    echo -e "   ${GRAY}│${NC}  ${DIM}Tag:${NC} ${CYAN}${tag}${NC}"
+    print_box_end
+    echo ""
+    echo -e "   ${BOLD}${MAGENTA}📦 Full Image:${NC}"
+    echo -e "   ${CYAN}$(get_full_image_path "$tag")${NC}"
+    echo ""
+
+    # Confirm
+    if ! confirm "Proceed with deployment?"; then
+        print_warning "Deployment cancelled by user"
+        exit 0
+    fi
+
+    echo ""
+
+    # Deploy
+    aks_deploy "$tag" || exit 1
+
+    # Success
+    print_section "🎉 Deployment Complete!"
+    print_success_banner "DEPLOYMENT SUCCESSFUL"
+
+    echo -e "   ${BOLD}${WHITE}Deployed Image:${NC}"
+    echo -e "   ${CYAN}$(get_full_image_path "$tag")${NC}"
+    echo ""
+    print_box_start
+    echo -e "   ${GRAY}│${NC} ${BOLD}${MAGENTA}Quick Reference${NC}"
+    print_box_empty
+    echo -e "   ${GRAY}│${NC}  ${DIM}View logs:${NC}"
+    echo -e "   ${GRAY}│${NC}  ${CYAN}xiops logs${NC}"
+    print_box_empty
+    echo -e "   ${GRAY}│${NC}  ${DIM}Check status:${NC}"
+    echo -e "   ${GRAY}│${NC}  ${CYAN}xiops status${NC}"
+    print_box_empty
+    echo -e "   ${GRAY}│${NC}  ${DIM}Rollback:${NC}"
+    echo -e "   ${GRAY}│${NC}  ${CYAN}xiops rollback${NC}"
+    print_box_end
+    echo ""
+    echo -e "${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${DIM}Deployment completed at $(timestamp)${NC}"
+    echo -e "${GRAY}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+}
+
+# =============================================
+# Release command (build + deploy)
+# =============================================
+cmd_release() {
+    print_header "🎯 XIOPS - Full Release"
+    print_info "This will build, push, and deploy your application"
+    echo ""
+
+    # Run build (which will prompt for deploy)
+    cmd_build
+}
+
+# =============================================
+# Status command
+# =============================================
+cmd_status() {
+    print_header "📊 XIOPS - Deployment Status"
+
+    load_env || exit 1
+
+    # Show deployment status
+    show_deployment_status > /dev/null
+
+    # Connect to AKS and show detailed status
+    aks_connect || exit 1
+    aks_show_status
+}
+
+# =============================================
+# Logs command
+# =============================================
+cmd_logs() {
+    load_env || exit 1
+    aks_connect || exit 1
+    aks_logs
+}
+
+# =============================================
+# Rollback command
+# =============================================
+cmd_rollback() {
+    print_header "⏪ XIOPS - Rollback"
+
+    load_env || exit 1
+    validate_for_deploy || exit 1
+    aks_connect || exit 1
+
+    if ! confirm "Are you sure you want to rollback?"; then
+        print_warning "Rollback cancelled"
+        exit 0
+    fi
+
+    aks_rollback
+}
+
+# =============================================
+# Restart command
+# =============================================
+cmd_restart() {
+    print_header "🔄 XIOPS - Restart Deployment"
+
+    load_env || exit 1
+    validate_for_deploy || exit 1
+    aks_connect || exit 1
+
+    if ! confirm "Are you sure you want to restart the deployment?"; then
+        print_warning "Restart cancelled"
+        exit 0
+    fi
+
+    aks_restart
+}
+
+# =============================================
+# Shell command
+# =============================================
+cmd_shell() {
+    load_env || exit 1
+    aks_connect || exit 1
+    aks_shell
+}
+
+# =============================================
+# Init command
+# =============================================
+cmd_init() {
+    print_header "📝 XIOPS - Initialize Project"
+
+    if [[ -f ".env" ]]; then
+        print_warning ".env file already exists"
+        if ! confirm "Overwrite with template?" "N"; then
+            print_info "Initialization cancelled"
+            exit 0
+        fi
+    fi
+
+    generate_env_template ".env"
+    print_success "Created .env template"
+    print_info "Edit .env with your project configuration"
+}
+
+# =============================================
+# Config command
+# =============================================
+cmd_config() {
+    print_header "⚙️  XIOPS - Configuration"
+
+    if ! load_env 2>/dev/null; then
+        print_warning "No .env file found"
+        print_info "Run 'xiops init' to create a template"
+        exit 1
+    fi
+
+    show_config
+}
+
+# =============================================
+# Secret command (Key Vault operations)
+# =============================================
+cmd_secret() {
+    local subcommand="${1:-}"
+    local arg1="${2:-}"
+    local arg2="${3:-}"
+
+    load_env || exit 1
+
+    if [[ -z "${KEY_VAULT_NAME:-}" ]]; then
+        print_error "KEY_VAULT_NAME not set in .env"
+        print_info "Add KEY_VAULT_NAME=your-keyvault to .env"
+        exit 1
+    fi
+
+    kv_connect || exit 1
+
+    case "$subcommand" in
+        list|ls)
+            print_header "🔐 XIOPS - Key Vault Secrets"
+            kv_list_secrets "$arg1"
+            ;;
+        get)
+            if [[ -z "$arg1" ]]; then
+                print_error "Secret name required"
+                print_info "Usage: xiops secret get <secret-name>"
+                exit 1
+            fi
+            print_header "🔐 XIOPS - Get Secret"
+            kv_get_secret "$arg1" "true"
+            ;;
+        set)
+            if [[ -z "$arg1" ]] || [[ -z "$arg2" ]]; then
+                print_error "Secret name and value required"
+                print_info "Usage: xiops secret set <secret-name> <value>"
+                exit 1
+            fi
+            print_header "🔐 XIOPS - Set Secret"
+            if confirm "Set secret '$arg1' in Key Vault?"; then
+                kv_set_secret "$arg1" "$arg2"
+            else
+                print_warning "Cancelled"
+            fi
+            ;;
+        delete|rm)
+            if [[ -z "$arg1" ]]; then
+                print_error "Secret name required"
+                print_info "Usage: xiops secret delete <secret-name>"
+                exit 1
+            fi
+            print_header "🔐 XIOPS - Delete Secret"
+            print_warning "This will delete the secret: $arg1"
+            if confirm "Are you sure?"; then
+                kv_delete_secret "$arg1"
+            else
+                print_warning "Cancelled"
+            fi
+            ;;
+        info)
+            if [[ -z "$arg1" ]]; then
+                print_error "Secret name required"
+                print_info "Usage: xiops secret info <secret-name>"
+                exit 1
+            fi
+            print_header "🔐 XIOPS - Secret Info"
+            kv_show_secret_info "$arg1"
+            ;;
+        sync)
+            print_header "🔐 XIOPS - Sync Secrets to Key Vault"
+            kv_sync_to_vault "$arg1" "$arg2"
+            ;;
+        export)
+            print_header "🔐 XIOPS - Export Secrets"
+            local output="${arg1:--}"
+            kv_export_secrets "$output" "$arg2"
+            ;;
+        *)
+            print_error "Unknown secret subcommand: $subcommand"
+            echo ""
+            echo "Available subcommands:"
+            echo "    list [filter]       List secrets in Key Vault"
+            echo "    get <name>          Get a secret value"
+            echo "    set <name> <value>  Set a secret value"
+            echo "    delete <name>       Delete a secret"
+            echo "    info <name>         Show secret metadata"
+            echo "    sync [prefix]       Sync .env secrets to Key Vault"
+            echo "    export [file]       Export secrets to .env format"
+            exit 1
+            ;;
+    esac
+}
+
+# =============================================
+# kubectl help
+# =============================================
+show_k_help() {
+    echo ""
+    echo -e "${BOLD}${CYAN}XIOPS kubectl Commands${NC}"
+    echo ""
+    echo -e "${BOLD}Resources:${NC}"
+    echo "    pods, p              List pods"
+    echo "    services, svc, s     List services"
+    echo "    deployments, d       List deployments"
+    echo "    configmaps, cm       List configmaps"
+    echo "    secrets              List secrets"
+    echo "    ingress, ing         List ingresses"
+    echo "    all                  List all resources"
+    echo "    namespaces, ns       List namespaces"
+    echo "    endpoints, ep        List endpoints"
+    echo "    pvc                  List PVCs"
+    echo ""
+    echo -e "${BOLD}Logs & Exec:${NC}"
+    echo "    logs [lines]         Get logs from all pods"
+    echo "    logs-prev [pod]      Get previous logs"
+    echo "    exec [pod] [cmd]     Exec into pod"
+    echo ""
+    echo -e "${BOLD}Describe:${NC}"
+    echo "    describe pod [name]  Describe pod"
+    echo "    describe deploy      Describe deployment"
+    echo "    describe svc         Describe service"
+    echo ""
+    echo -e "${BOLD}Scaling & Lifecycle:${NC}"
+    echo "    scale <n> [deploy]   Scale to n replicas"
+    echo "    restart [deploy]     Rolling restart"
+    echo "    history [deploy]     Rollout history"
+    echo "    undo [deploy] [rev]  Undo rollout"
+    echo ""
+    echo -e "${BOLD}Networking:${NC}"
+    echo "    port-forward <local> <remote> [resource]"
+    echo ""
+    echo -e "${BOLD}Monitoring:${NC}"
+    echo "    watch                Watch pods"
+    echo "    events               Get events"
+    echo "    top                  Pod resource usage"
+    echo "    top nodes            Node resource usage"
+    echo "    hpa                  HPA status"
+    echo "    debug [pod]          Debug pod"
+    echo ""
+    echo -e "${BOLD}Management:${NC}"
+    echo "    yaml [resource]      Get YAML"
+    echo "    apply <file>         Apply manifest"
+    echo "    delete <resource>    Delete resource"
+    echo "    edit [resource]      Edit resource"
+    echo ""
+    echo -e "${BOLD}Files:${NC}"
+    echo "    cp-from <pod-path> [local] [pod]"
+    echo "    cp-to <local> <pod-path> [pod]"
+    echo ""
+    echo -e "${BOLD}Context:${NC}"
+    echo "    contexts             List contexts"
+    echo "    use-context <ctx>    Switch context"
+    echo "    current-context      Current context"
+    echo ""
+}
+
+# =============================================
+# Kubectl command (k shorthand)
+# =============================================
+cmd_k() {
+    local subcommand="${1:-}"
+    local arg1="${2:-}"
+    local arg2="${3:-}"
+    local arg3="${4:-}"
+
+    # Show help without requiring .env
+    if [[ "$subcommand" == "help" ]] || [[ -z "$subcommand" ]]; then
+        show_k_help
+        return 0
+    fi
+
+    load_env || exit 1
+
+    # Connect to AKS first
+    aks_connect || exit 1
+
+    case "$subcommand" in
+        pods|pod|p)
+            print_header "☸️  XIOPS - Pods"
+            kube_pods "$arg1"
+            ;;
+        services|svc|s)
+            print_header "☸️  XIOPS - Services"
+            kube_services
+            ;;
+        deployments|deploy|d)
+            print_header "☸️  XIOPS - Deployments"
+            kube_deployments
+            ;;
+        configmaps|cm)
+            print_header "☸️  XIOPS - ConfigMaps"
+            kube_configmaps
+            ;;
+        secrets)
+            print_header "☸️  XIOPS - Secrets"
+            kube_secrets
+            ;;
+        ingress|ing)
+            print_header "☸️  XIOPS - Ingresses"
+            kube_ingresses
+            ;;
+        all)
+            print_header "☸️  XIOPS - All Resources"
+            kube_get_all
+            ;;
+        logs|log|l)
+            print_header "☸️  XIOPS - Logs"
+            kube_logs_all "${arg1:-100}"
+            ;;
+        logs-prev|prev)
+            print_header "☸️  XIOPS - Previous Logs"
+            kube_logs_previous "$arg1" "${arg2:-100}"
+            ;;
+        exec|e)
+            print_header "☸️  XIOPS - Exec"
+            kube_exec "$arg1" "${arg2:-/bin/sh}"
+            ;;
+        describe|desc)
+            print_header "☸️  XIOPS - Describe"
+            case "$arg1" in
+                pod|p)
+                    kube_describe_pod "$arg2"
+                    ;;
+                deployment|deploy|d)
+                    kube_describe_deployment "${arg2:-$SERVICE_NAME}"
+                    ;;
+                service|svc|s)
+                    kube_describe_service "${arg2:-$SERVICE_NAME}"
+                    ;;
+                *)
+                    # Default to pod
+                    kube_describe_pod "$arg1"
+                    ;;
+            esac
+            ;;
+        events|event|ev)
+            print_header "☸️  XIOPS - Events"
+            kube_events
+            ;;
+        scale)
+            print_header "☸️  XIOPS - Scale"
+            kube_scale "$arg1" "${arg2:-$SERVICE_NAME}"
+            ;;
+        port-forward|pf)
+            print_header "☸️  XIOPS - Port Forward"
+            kube_port_forward "${arg1:-8080}" "${arg2:-80}" "${arg3:-service/$SERVICE_NAME}"
+            ;;
+        watch|w)
+            print_header "☸️  XIOPS - Watch Pods"
+            kube_watch
+            ;;
+        top)
+            print_header "☸️  XIOPS - Resource Usage"
+            case "$arg1" in
+                nodes|node|n)
+                    kube_top_nodes
+                    ;;
+                *)
+                    kube_top_pods
+                    ;;
+            esac
+            ;;
+        hpa)
+            print_header "☸️  XIOPS - HPA"
+            kube_hpa
+            ;;
+        restart|rs)
+            print_header "☸️  XIOPS - Restart"
+            if confirm "Restart deployment ${arg1:-$SERVICE_NAME}?"; then
+                kube_restart "${arg1:-$SERVICE_NAME}"
+            fi
+            ;;
+        history|hist)
+            print_header "☸️  XIOPS - Rollout History"
+            kube_history "${arg1:-$SERVICE_NAME}"
+            ;;
+        undo)
+            print_header "☸️  XIOPS - Undo Rollout"
+            if confirm "Undo rollout for ${arg1:-$SERVICE_NAME}?"; then
+                kube_undo "${arg1:-$SERVICE_NAME}" "$arg2"
+            fi
+            ;;
+        yaml|y)
+            print_header "☸️  XIOPS - Get YAML"
+            kube_get_yaml "${arg1:-deployment/$SERVICE_NAME}"
+            ;;
+        apply|a)
+            print_header "☸️  XIOPS - Apply"
+            kube_apply "$arg1"
+            ;;
+        delete|del)
+            print_header "☸️  XIOPS - Delete"
+            kube_delete "$arg1"
+            ;;
+        edit)
+            print_header "☸️  XIOPS - Edit"
+            kube_edit "${arg1:-deployment/$SERVICE_NAME}"
+            ;;
+        cp-from)
+            print_header "☸️  XIOPS - Copy From Pod"
+            kube_cp_from "$arg1" "${arg2:-.}" "$arg3"
+            ;;
+        cp-to)
+            print_header "☸️  XIOPS - Copy To Pod"
+            kube_cp_to "$arg1" "$arg2" "$arg3"
+            ;;
+        contexts|ctx)
+            print_header "☸️  XIOPS - Contexts"
+            kube_contexts
+            ;;
+        use-context)
+            print_header "☸️  XIOPS - Switch Context"
+            kube_use_context "$arg1"
+            ;;
+        current-context|cc)
+            print_header "☸️  XIOPS - Current Context"
+            kube_current_context
+            ;;
+        namespaces|ns)
+            print_header "☸️  XIOPS - Namespaces"
+            kube_namespaces
+            ;;
+        endpoints|ep)
+            print_header "☸️  XIOPS - Endpoints"
+            kube_endpoints
+            ;;
+        pvc)
+            print_header "☸️  XIOPS - PVCs"
+            kube_pvc
+            ;;
+        debug|dbg)
+            print_header "☸️  XIOPS - Debug Pod"
+            kube_debug "$arg1"
+            ;;
+        *)
+            print_error "Unknown k subcommand: $subcommand"
+            echo "Run 'xiops k help' for available commands"
+            exit 1
+            ;;
+    esac
+}
+
+# =============================================
+# Parse arguments
+# =============================================
+OPT_TAG=""
+COMMAND=""
+SECRET_SUBCOMMAND=""
+SECRET_ARG1=""
+SECRET_ARG2=""
+K_SUBCOMMAND=""
+K_ARG1=""
+K_ARG2=""
+K_ARG3=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            show_help
+            exit 0
+            ;;
+        -v|--version)
+            show_version
+            exit 0
+            ;;
+        -t|--tag)
+            OPT_TAG="$2"
+            shift 2
+            ;;
+        build|deploy|release|status|logs|rollback|restart|shell|init|config)
+            COMMAND="$1"
+            shift
+            ;;
+        secret)
+            COMMAND="secret"
+            SECRET_SUBCOMMAND="${2:-}"
+            SECRET_ARG1="${3:-}"
+            SECRET_ARG2="${4:-}"
+            shift $#
+            ;;
+        k)
+            COMMAND="k"
+            K_SUBCOMMAND="${2:-}"
+            K_ARG1="${3:-}"
+            K_ARG2="${4:-}"
+            K_ARG3="${5:-}"
+            shift $#
+            ;;
+        *)
+            print_error "Unknown option or command: $1"
+            echo "Run 'xiops --help' for usage"
+            exit 1
+            ;;
+    esac
+done
+
+# =============================================
+# Execute command
+# =============================================
+if [[ -z "$COMMAND" ]]; then
+    show_help
+    exit 0
+fi
+
+case "$COMMAND" in
+    build)
+        cmd_build
+        ;;
+    deploy)
+        cmd_deploy
+        ;;
+    release)
+        cmd_release
+        ;;
+    status)
+        cmd_status
+        ;;
+    logs)
+        cmd_logs
+        ;;
+    rollback)
+        cmd_rollback
+        ;;
+    restart)
+        cmd_restart
+        ;;
+    shell)
+        cmd_shell
+        ;;
+    init)
+        cmd_init
+        ;;
+    config)
+        cmd_config
+        ;;
+    secret)
+        cmd_secret "$SECRET_SUBCOMMAND" "$SECRET_ARG1" "$SECRET_ARG2"
+        ;;
+    k)
+        cmd_k "$K_SUBCOMMAND" "$K_ARG1" "$K_ARG2" "$K_ARG3"
+        ;;
+esac
