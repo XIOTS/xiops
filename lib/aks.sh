@@ -41,6 +41,7 @@ aks_prepare_namespace() {
 # =============================================
 aks_process_manifests() {
     local k8s_dir="${XIOPS_PROJECT_DIR}/k8s"
+    local processed_dir="${XIOPS_PROJECT_DIR}/.xiops-processed"
 
     if [[ ! -d "$k8s_dir" ]]; then
         print_error "k8s directory not found: $k8s_dir"
@@ -49,29 +50,34 @@ aks_process_manifests() {
 
     print_section "📝 Processing Kubernetes Manifests"
 
-    cd "$k8s_dir" || return 1
+    # Create processed directory (don't modify source files)
+    rm -rf "$processed_dir"
+    mkdir -p "$processed_dir"
 
     # Export variables for envsubst
     export NAMESPACE
     export ACR_NAME
     export IMAGE_TAG
+    export IMAGE_NAME="${IMAGE_NAME:-$SERVICE_NAME}"
     export SERVICE_NAME
     export WORKLOAD_IDENTITY_CLIENT_ID
     export KEY_VAULT_NAME
     export AZURE_TENANT_ID="${TENANT_ID}"
 
-    # Process each yaml file
+    # Process each yaml file to the processed directory
     local files=("kustomization.yaml" "deployment.yaml" "configmap.yaml" "service.yaml" "secret-provider-class.yaml" "hpa.yaml")
 
     for file in "${files[@]}"; do
-        if [[ -f "$file" ]]; then
+        if [[ -f "${k8s_dir}/${file}" ]]; then
             print_step "Processing ${file}..."
-            envsubst < "$file" > "${file}.tmp" && mv "${file}.tmp" "$file"
+            envsubst < "${k8s_dir}/${file}" > "${processed_dir}/${file}"
             print_success "${file} processed"
         fi
     done
 
-    cd - > /dev/null || return 1
+    # Store processed dir for apply step
+    export XIOPS_PROCESSED_DIR="$processed_dir"
+
     return 0
 }
 
@@ -79,7 +85,7 @@ aks_process_manifests() {
 # Apply K8s manifests
 # =============================================
 aks_apply_manifests() {
-    local k8s_dir="${XIOPS_PROJECT_DIR}/k8s"
+    local k8s_dir="${XIOPS_PROCESSED_DIR:-${XIOPS_PROJECT_DIR}/k8s}"
 
     print_step "Applying manifests with kustomize..."
 
@@ -91,6 +97,18 @@ aks_apply_manifests() {
     fi
 
     print_success "All manifests applied"
+
+    # Clean up processed directory
+    if [[ -n "$XIOPS_PROCESSED_DIR" && -d "$XIOPS_PROCESSED_DIR" ]]; then
+        rm -rf "$XIOPS_PROCESSED_DIR"
+    fi
+
+    # Force rollout restart to ensure new image is pulled
+    local deployment="${SERVICE_NAME}"
+    print_step "Triggering rollout restart for ${deployment}..."
+    kubectl rollout restart "deployment/${deployment}" -n "$NAMESPACE" 2>/dev/null || true
+    print_success "Rollout restart triggered"
+
     return 0
 }
 
@@ -110,6 +128,36 @@ aks_wait_rollout() {
         return 0
     else
         print_error "Deployment rollout failed or timed out"
+        echo ""
+
+        # Show pod status
+        print_section "🔍 Debugging Information"
+        echo ""
+        echo -e "${BOLD}${WHITE}Pod Status:${NC}"
+        kubectl get pods -n "$namespace" -l "app=${deployment}" 2>/dev/null
+        echo ""
+
+        # Get pod events for troubleshooting
+        echo -e "${BOLD}${WHITE}Recent Pod Events:${NC}"
+        kubectl get events -n "$namespace" --sort-by='.lastTimestamp' 2>/dev/null | grep -i "$deployment" | tail -10
+        echo ""
+
+        # Show detailed pod errors
+        local pod
+        pod=$(kubectl get pod -n "$namespace" -l "app=${deployment}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+        if [[ -n "$pod" ]]; then
+            echo -e "${BOLD}${WHITE}Pod Describe (Events):${NC}"
+            kubectl describe pod "$pod" -n "$namespace" 2>/dev/null | grep -A 20 "^Events:" | head -25
+        fi
+
+        echo ""
+        print_info "Run 'xiops k describe pod' for full details"
+
+        # Attempt rollout restart to pick up any recent changes
+        echo ""
+        print_step "Attempting rollout restart to recover..."
+        kubectl rollout restart "deployment/${deployment}" -n "$namespace" 2>/dev/null
+
         return 1
     fi
 }
@@ -165,6 +213,7 @@ aks_show_status() {
 # =============================================
 aks_deploy() {
     local tag="${1:-$IMAGE_TAG}"
+    local skip_migrations="${SKIP_MIGRATIONS:-false}"
 
     # Set IMAGE_TAG for processing
     export IMAGE_TAG="$tag"
@@ -174,6 +223,21 @@ aks_deploy() {
 
     # Prepare namespace
     aks_prepare_namespace || return 1
+
+    # Run migrations (unless skipped)
+    if [[ "$skip_migrations" != "true" ]]; then
+        if [[ -f "${XIOPS_PROJECT_DIR}/k8s/migration-job.yaml" ]]; then
+            run_migration_job "$tag" || {
+                print_error "Migration failed. Aborting deployment."
+                print_info "Use --skip-migrations to deploy without migrations"
+                return 1
+            }
+        else
+            print_info "No migration-job.yaml found, skipping migrations"
+        fi
+    else
+        print_warning "Skipping migrations (--skip-migrations flag)"
+    fi
 
     # Process manifests
     aks_process_manifests || return 1

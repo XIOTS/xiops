@@ -13,7 +13,7 @@ XIOPS_REQUIRED_BUILD="ACR_NAME SERVICE_NAME"
 
 XIOPS_REQUIRED_DEPLOY="ACR_NAME AKS_CLUSTER_NAME RESOURCE_GROUP NAMESPACE SERVICE_NAME"
 
-XIOPS_OPTIONAL_VARS="IMAGE_TAG KEY_VAULT_NAME WORKLOAD_IDENTITY_CLIENT_ID TENANT_ID SUBSCRIPTION_ID"
+XIOPS_OPTIONAL_VARS="IMAGE_TAG IMAGE_NAME KEY_VAULT_NAME WORKLOAD_IDENTITY_CLIENT_ID TENANT_ID SUBSCRIPTION_ID"
 
 # =============================================
 # Find project root (directory containing .env)
@@ -184,6 +184,7 @@ show_config() {
         build)
             print_box_line "ACR Name" "${ACR_NAME:-not set}"
             print_box_line "Service Name" "${SERVICE_NAME:-not set}"
+            print_box_line "Image Name" "${IMAGE_NAME:-$SERVICE_NAME}"
             print_box_line "Image Tag" "${IMAGE_TAG:-auto-generated}"
             ;;
         deploy)
@@ -198,6 +199,7 @@ show_config() {
             print_box_line "Project Dir" "${XIOPS_PROJECT_DIR:-not set}"
             print_box_line "ACR Name" "${ACR_NAME:-not set}"
             print_box_line "Service Name" "${SERVICE_NAME:-not set}"
+            print_box_line "Image Name" "${IMAGE_NAME:-$SERVICE_NAME}"
             print_box_line "AKS Cluster" "${AKS_CLUSTER_NAME:-not set}"
             print_box_line "Resource Group" "${RESOURCE_GROUP:-not set}"
             print_box_line "Namespace" "${NAMESPACE:-not set}"
@@ -228,6 +230,9 @@ SERVICE_NAME=my-service
 # Azure Container Registry (Required for build)
 ACR_NAME=your-acr-name
 
+# Image Name (Optional - defaults to SERVICE_NAME if not set)
+# IMAGE_NAME=my-image
+
 # Azure Kubernetes Service (Required for deploy)
 AKS_CLUSTER_NAME=your-aks-cluster
 RESOURCE_GROUP=your-resource-group
@@ -255,12 +260,14 @@ EOF
 # =============================================
 get_full_image_path() {
     local tag="${1:-$IMAGE_TAG}"
-    echo "${ACR_NAME}.azurecr.io/${SERVICE_NAME}:${tag}"
+    local image_name="${IMAGE_NAME:-$SERVICE_NAME}"
+    echo "${ACR_NAME}.azurecr.io/${image_name}:${tag}"
 }
 
 # =============================================
 # Get image repository (without tag)
 # =============================================
 get_image_repository() {
-    echo "${ACR_NAME}.azurecr.io/${SERVICE_NAME}"
+    local image_name="${IMAGE_NAME:-$SERVICE_NAME}"
+    echo "${ACR_NAME}.azurecr.io/${image_name}"
 }

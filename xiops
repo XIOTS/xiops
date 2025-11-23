@@ -18,6 +18,7 @@ source "${XIOPS_DIR}/lib/acr.sh"
 source "${XIOPS_DIR}/lib/aks.sh"
 source "${XIOPS_DIR}/lib/keyvault.sh"
 source "${XIOPS_DIR}/lib/kubectl.sh"
+source "${XIOPS_DIR}/lib/migrate.sh"
 
 # =============================================
 # Help text
@@ -41,6 +42,12 @@ show_help() {
     echo -e "    ${CYAN}shell${NC}       Get shell access to pod"
     echo -e "    ${CYAN}init${NC}        Initialize .env template"
     echo -e "    ${CYAN}config${NC}      Show current configuration"
+    echo ""
+    echo -e "${BOLD}MIGRATION COMMANDS:${NC}"
+    echo -e "    ${CYAN}migrate${NC}         Run database migrations"
+    echo -e "    ${CYAN}migrate status${NC}  Show current migration revision"
+    echo -e "    ${CYAN}migrate history${NC} Show migration history"
+    echo -e "    ${CYAN}migrate down${NC}    Downgrade migration"
     echo ""
     echo -e "${BOLD}KEY VAULT COMMANDS:${NC}"
     echo -e "    ${CYAN}secret list${NC}     List secrets in Key Vault"
@@ -69,9 +76,10 @@ show_help() {
     echo -e "    ${CYAN}k undo${NC}          Undo rollout"
     echo ""
     echo -e "${BOLD}OPTIONS:${NC}"
-    echo "    -h, --help      Show this help message"
-    echo "    -v, --version   Show version"
-    echo "    -t, --tag TAG   Specify image tag (overrides .env)"
+    echo "    -h, --help           Show this help message"
+    echo "    -v, --version        Show version"
+    echo "    -t, --tag TAG        Specify image tag (overrides .env)"
+    echo "    --skip-migrations    Skip database migrations during deploy"
     echo ""
     echo -e "${BOLD}EXAMPLES:${NC}"
     echo "    xiops build            # Build with interactive tag prompt"
@@ -80,6 +88,12 @@ show_help() {
     echo "    xiops release          # Build and deploy in one command"
     echo "    xiops logs             # Stream logs from pods"
     echo "    xiops rollback         # Rollback to previous version"
+    echo ""
+    echo -e "${BOLD}MIGRATION EXAMPLES:${NC}"
+    echo "    xiops migrate                  # Run pending migrations"
+    echo "    xiops migrate status           # Show current revision"
+    echo "    xiops migrate history          # Show migration history"
+    echo "    xiops deploy --skip-migrations # Deploy without running migrations"
     echo ""
     echo -e "${BOLD}KEY VAULT EXAMPLES:${NC}"
     echo "    xiops secret list              # List all secrets"
@@ -521,6 +535,56 @@ cmd_secret() {
 }
 
 # =============================================
+# Migrate command
+# =============================================
+cmd_migrate() {
+    local subcommand="${1:-}"
+    local arg1="${2:-}"
+
+    load_env || exit 1
+
+    # Connect to AKS first
+    aks_connect || exit 1
+
+    case "$subcommand" in
+        ""|run|upgrade)
+            # Default: run migrations via job
+            local tag="${OPT_TAG:-${IMAGE_TAG:-latest}}"
+            run_migration_job "$tag"
+            ;;
+        status|current)
+            get_migration_status
+            ;;
+        history|hist)
+            show_migration_history
+            ;;
+        down|downgrade)
+            run_migration_downgrade "${arg1:--1}"
+            ;;
+        exec)
+            # Run arbitrary alembic command
+            if [[ -z "$arg1" ]]; then
+                print_error "Command required"
+                print_info "Usage: xiops migrate exec <alembic-command>"
+                exit 1
+            fi
+            run_migration_exec "$arg1"
+            ;;
+        *)
+            print_error "Unknown migrate subcommand: $subcommand"
+            echo ""
+            echo "Available subcommands:"
+            echo "    (none)              Run pending migrations (default)"
+            echo "    status              Show current migration revision"
+            echo "    history             Show migration history"
+            echo "    down [revision]     Downgrade to revision (default: -1)"
+            echo "    exec <command>      Run arbitrary alembic command"
+            exit 1
+            ;;
+    esac
+}
+
+# =============================================
 # kubectl help
 # =============================================
 show_k_help() {
@@ -781,6 +845,9 @@ K_SUBCOMMAND=""
 K_ARG1=""
 K_ARG2=""
 K_ARG3=""
+MIGRATE_SUBCOMMAND=""
+MIGRATE_ARG1=""
+SKIP_MIGRATIONS="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -796,9 +863,19 @@ while [[ $# -gt 0 ]]; do
             OPT_TAG="$2"
             shift 2
             ;;
+        --skip-migrations)
+            SKIP_MIGRATIONS="true"
+            shift
+            ;;
         build|deploy|release|status|logs|rollback|restart|shell|init|config)
             COMMAND="$1"
             shift
+            ;;
+        migrate)
+            COMMAND="migrate"
+            MIGRATE_SUBCOMMAND="${2:-}"
+            MIGRATE_ARG1="${3:-}"
+            shift $#
             ;;
         secret)
             COMMAND="secret"
@@ -864,6 +941,9 @@ case "$COMMAND" in
         ;;
     secret)
         cmd_secret "$SECRET_SUBCOMMAND" "$SECRET_ARG1" "$SECRET_ARG2"
+        ;;
+    migrate)
+        cmd_migrate "$MIGRATE_SUBCOMMAND" "$MIGRATE_ARG1"
         ;;
     k)
         cmd_k "$K_SUBCOMMAND" "$K_ARG1" "$K_ARG2" "$K_ARG3"

@@ -155,8 +155,8 @@ prompt_image_tag() {
     local current_num
     local next_num
 
-    print_section "🏷️  Enter New Image Tag"
-    echo ""
+    print_section "🏷️  Enter New Image Tag" >&2
+    echo "" >&2
 
     # Calculate suggested version
     if [[ -n "$current_tag" ]]; then
@@ -166,11 +166,11 @@ prompt_image_tag() {
         fi
     fi
 
-    echo -e "   ${DIM}Image tag format:${NC} ${CYAN}v${NC}${GREEN}<number>${NC}"
-    echo -e "   ${DIM}Suggested next:${NC} ${GREEN}${suggested_num}${NC} ${DIM}(will become v${suggested_num})${NC}"
-    echo ""
-    echo -ne "   ${BOLD}${WHITE}Enter version number ${NC}${DIM}[${suggested_num}]${NC}${BOLD}${WHITE}: v${NC}"
-    read -r user_num
+    echo -e "   ${DIM}Image tag format:${NC} ${CYAN}v${NC}${GREEN}<number>${NC}" >&2
+    echo -e "   ${DIM}Suggested next:${NC} ${GREEN}${suggested_num}${NC} ${DIM}(will become v${suggested_num})${NC}" >&2
+    echo "" >&2
+    echo -ne "   ${BOLD}${WHITE}Enter version number ${NC}${DIM}[${suggested_num}]${NC}${BOLD}${WHITE}: v${NC}" >&2
+    read -r user_num </dev/tty
 
     # Use suggested if empty
     if [[ -z "$user_num" ]]; then
@@ -192,18 +192,23 @@ show_deployment_status() {
     local last_built_tag=""
     local env_tag=""
 
-    print_section "📦 Current Deployment Status"
-    echo ""
+    print_section "📦 Current Deployment Status" >&2
+    echo "" >&2
 
-    # Try to get from Kubernetes
-    print_step "Fetching deployed image from Kubernetes..."
-    k8s_image=$(get_deployed_image "$namespace" "$service")
+    # Try to get from Kubernetes (with timeout to avoid hanging)
+    print_step "Fetching deployed image from Kubernetes..." >&2
+
+    # Use perl-based timeout for macOS compatibility
+    k8s_image=$(perl -e 'alarm 10; exec @ARGV' kubectl get pods \
+        -l "app=${service}" \
+        -n "$namespace" \
+        -o jsonpath='{.items[0].spec.containers[0].image}' 2>/dev/null || echo "")
 
     if [[ -n "$k8s_image" ]]; then
         current_tag=$(echo "$k8s_image" | sed 's/.*://')
-        print_success "Connected to Kubernetes cluster"
+        print_success "Connected to Kubernetes cluster" >&2
     else
-        print_warning "Could not connect to Kubernetes, using local files"
+        print_warning "Could not connect to Kubernetes, using local files" >&2
         if [[ -f "${XIOPS_PROJECT_DIR}/deployed-image-tag.txt" ]]; then
             current_tag=$(cat "${XIOPS_PROJECT_DIR}/deployed-image-tag.txt" 2>/dev/null | tr -d '\n\r')
         fi
@@ -217,33 +222,35 @@ show_deployment_status() {
     # Get .env IMAGE_TAG
     env_tag="$IMAGE_TAG"
 
-    echo ""
-    print_box_start
-    print_box_title "Image Repository"
-    echo -e "   ${GRAY}│${NC}  ${CYAN}$(get_image_repository)${NC}"
-    print_box_empty
-    print_box_title "Tag Information"
+    echo "" >&2
+    print_box_start >&2
+    print_box_title "Image Repository" >&2
+    local repo_path
+    repo_path=$(get_image_repository)
+    echo -e "   ${GRAY}│${NC}  ${CYAN}${repo_path}${NC}" >&2
+    print_box_empty >&2
+    print_box_title "Tag Information" >&2
 
     if [[ -n "$k8s_image" ]]; then
-        echo -e "   ${GRAY}│${NC}  ${DIM}Full Image (K8s):${NC}    ${CYAN}${k8s_image}${NC}"
+        echo -e "   ${GRAY}│${NC}  ${DIM}Full Image (K8s):${NC}    ${CYAN}${k8s_image}${NC}" >&2
     fi
 
     if [[ -n "$current_tag" ]]; then
-        echo -e "   ${GRAY}│${NC}  ${DIM}Currently Deployed:${NC}  ${GREEN}${current_tag}${NC} ${DIM}(live)${NC}"
+        echo -e "   ${GRAY}│${NC}  ${DIM}Currently Deployed:${NC}  ${GREEN}${current_tag}${NC} ${DIM}(live)${NC}" >&2
     else
-        echo -e "   ${GRAY}│${NC}  ${DIM}Currently Deployed:${NC}  ${YELLOW}Unknown${NC}"
+        echo -e "   ${GRAY}│${NC}  ${DIM}Currently Deployed:${NC}  ${YELLOW}Unknown${NC}" >&2
     fi
 
     if [[ -n "$last_built_tag" && "$last_built_tag" != "$current_tag" ]]; then
-        echo -e "   ${GRAY}│${NC}  ${DIM}Last Built:${NC}          ${CYAN}${last_built_tag}${NC}"
+        echo -e "   ${GRAY}│${NC}  ${DIM}Last Built:${NC}          ${CYAN}${last_built_tag}${NC}" >&2
     fi
 
     if [[ -n "$env_tag" && "$env_tag" != "$current_tag" ]]; then
-        echo -e "   ${GRAY}│${NC}  ${DIM}.env IMAGE_TAG:${NC}      ${MAGENTA}${env_tag}${NC}"
+        echo -e "   ${GRAY}│${NC}  ${DIM}.env IMAGE_TAG:${NC}      ${MAGENTA}${env_tag}${NC}" >&2
     fi
 
-    print_box_end
-    echo ""
+    print_box_end >&2
+    echo "" >&2
 
     # Return current tag for use
     echo "$current_tag"
