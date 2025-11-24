@@ -2,7 +2,7 @@ class Xiops < Formula
   desc "Project-agnostic deployment CLI for Azure Container Registry and AKS"
   homepage "https://github.com/Comms-Source-Ltd/xiops"
   url "https://github.com/Comms-Source-Ltd/xiops/archive/refs/tags/v1.1.1.tar.gz"
-  sha256 "d34ae6e0a8816273368330310dd0e697f39ec92c92bb22315edc5677c11ed3e9"
+  sha256 "aa81f8b1960311da9170e663922ea81b0c6c044608d72ade42b9bb6d277a41f6"
   license "MIT"
   version "1.1.1"
 
