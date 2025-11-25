@@ -46,11 +46,18 @@ ln -s $(pwd)/xiops /usr/local/bin/xiops
 ## Quick Start
 
 1. Navigate to your project directory
-2. Initialize configuration:
+2. Run Azure setup to auto-configure:
+   ```bash
+   xiops setup
+   ```
+   This fetches your Azure resources (subscriptions, resource groups, ACR, AKS, Key Vault) and creates `.env` automatically.
+
+3. Or initialize manually:
    ```bash
    xiops init
    ```
-3. Edit `.env` with your project settings
+   Then edit `.env` with your project settings.
+
 4. Build and deploy:
    ```bash
    xiops release
@@ -60,6 +67,7 @@ ln -s $(pwd)/xiops /usr/local/bin/xiops
 
 | Command | Description |
 |---------|-------------|
+| `xiops setup` | **NEW!** Auto-configure .env from Azure APIs |
 | `xiops build` | Build and push Docker image to ACR |
 | `xiops deploy` | Deploy to AKS cluster |
 | `xiops release` | Build and deploy (combined) |

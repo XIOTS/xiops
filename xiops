@@ -33,6 +33,7 @@ show_help() {
     echo "    xiops <command> [options]"
     echo ""
     echo -e "${BOLD}COMMANDS:${NC}"
+    echo -e "    ${CYAN}setup${NC}       ${GREEN}NEW!${NC} Auto-configure .env from Azure"
     echo -e "    ${CYAN}build${NC}       Build and push Docker image to ACR"
     echo -e "    ${CYAN}deploy${NC}      Deploy to AKS cluster"
     echo -e "    ${CYAN}release${NC}     Build and deploy (build + deploy)"
@@ -1075,6 +1076,9 @@ case "$COMMAND" in
         ;;
     init)
         cmd_init
+        ;;
+    setup)
+        azure_setup
         ;;
     config)
         cmd_config

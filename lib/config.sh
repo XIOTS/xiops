@@ -291,3 +291,331 @@ get_image_repository() {
     local image_name="${IMAGE_NAME:-$SERVICE_NAME}"
     echo "${ACR_NAME}.azurecr.io/${image_name}"
 }
+
+# =============================================
+# Azure Setup - Fetch Azure details and fill .env
+# =============================================
+azure_setup() {
+    print_section "🔧 Azure Setup"
+    print_info "This will fetch your Azure resources and configure .env"
+    echo ""
+
+    # Check if logged into Azure
+    print_step "Checking Azure login..."
+    if ! az account show &>/dev/null; then
+        print_warning "Not logged into Azure"
+        print_step "Opening Azure login..."
+        if ! az login; then
+            print_error "Azure login failed"
+            return 1
+        fi
+    fi
+    print_success "Azure login verified"
+
+    # Get current directory for .env
+    local env_file=".env"
+    local project_dir="$PWD"
+
+    # Check if .env exists, if not create from template
+    if [[ ! -f "$env_file" ]]; then
+        print_step "Creating .env file..."
+        generate_env_template "$env_file"
+    fi
+
+    # ===== SUBSCRIPTION =====
+    print_section "📋 Select Subscription"
+    local subscriptions
+    subscriptions=$(az account list --query "[].{name:name, id:id, isDefault:isDefault}" -o tsv 2>/dev/null)
+
+    if [[ -z "$subscriptions" ]]; then
+        print_error "No subscriptions found"
+        return 1
+    fi
+
+    echo ""
+    echo -e "${BOLD}${WHITE}Available Subscriptions:${NC}"
+    local i=1
+    local sub_ids=()
+    local sub_names=()
+    local default_sub=""
+
+    while IFS=$'\t' read -r name id is_default; do
+        sub_names+=("$name")
+        sub_ids+=("$id")
+        local marker=""
+        if [[ "$is_default" == "true" ]]; then
+            marker=" ${GREEN}(current)${NC}"
+            default_sub=$i
+        fi
+        echo -e "  ${CYAN}$i${NC}) $name$marker"
+        ((i++))
+    done <<< "$subscriptions"
+
+    echo ""
+    printf "Select subscription [${default_sub:-1}]: "
+    read -r sub_choice </dev/tty
+    sub_choice=${sub_choice:-${default_sub:-1}}
+
+    local selected_sub_id="${sub_ids[$((sub_choice-1))]}"
+    local selected_sub_name="${sub_names[$((sub_choice-1))]}"
+
+    print_step "Setting subscription: $selected_sub_name"
+    az account set --subscription "$selected_sub_id"
+    print_success "Subscription set"
+
+    # Get Tenant ID
+    local tenant_id
+    tenant_id=$(az account show --query tenantId -o tsv)
+
+    # ===== RESOURCE GROUP =====
+    print_section "📁 Select Resource Group"
+    local resource_groups
+    resource_groups=$(az group list --query "[].name" -o tsv 2>/dev/null | sort)
+
+    if [[ -z "$resource_groups" ]]; then
+        print_error "No resource groups found"
+        return 1
+    fi
+
+    echo ""
+    echo -e "${BOLD}${WHITE}Available Resource Groups:${NC}"
+    i=1
+    local rg_names=()
+    while read -r rg; do
+        rg_names+=("$rg")
+        echo -e "  ${CYAN}$i${NC}) $rg"
+        ((i++))
+    done <<< "$resource_groups"
+
+    echo ""
+    printf "Select resource group: "
+    read -r rg_choice </dev/tty
+
+    local selected_rg="${rg_names[$((rg_choice-1))]}"
+    print_success "Selected: $selected_rg"
+
+    # ===== ACR =====
+    print_section "🐳 Select Container Registry (ACR)"
+    local acr_list
+    acr_list=$(az acr list --resource-group "$selected_rg" --query "[].name" -o tsv 2>/dev/null)
+
+    # If no ACR in selected RG, search all RGs
+    if [[ -z "$acr_list" ]]; then
+        print_warning "No ACR found in $selected_rg, searching all resource groups..."
+        acr_list=$(az acr list --query "[].name" -o tsv 2>/dev/null)
+    fi
+
+    local selected_acr=""
+    if [[ -z "$acr_list" ]]; then
+        print_warning "No ACR found in subscription"
+        printf "Enter ACR name manually (or press Enter to skip): "
+        read -r selected_acr </dev/tty
+    else
+        echo ""
+        echo -e "${BOLD}${WHITE}Available Container Registries:${NC}"
+        i=1
+        local acr_names=()
+        while read -r acr; do
+            acr_names+=("$acr")
+            echo -e "  ${CYAN}$i${NC}) $acr"
+            ((i++))
+        done <<< "$acr_list"
+
+        echo ""
+        printf "Select ACR: "
+        read -r acr_choice </dev/tty
+
+        selected_acr="${acr_names[$((acr_choice-1))]}"
+        print_success "Selected: $selected_acr"
+    fi
+
+    # ===== AKS =====
+    print_section "☸️ Select Kubernetes Cluster (AKS)"
+    local aks_list
+    aks_list=$(az aks list --resource-group "$selected_rg" --query "[].name" -o tsv 2>/dev/null)
+
+    # If no AKS in selected RG, search all RGs
+    if [[ -z "$aks_list" ]]; then
+        print_warning "No AKS found in $selected_rg, searching all resource groups..."
+        aks_list=$(az aks list --query "[].name" -o tsv 2>/dev/null)
+    fi
+
+    local selected_aks=""
+    if [[ -z "$aks_list" ]]; then
+        print_warning "No AKS cluster found in subscription"
+        printf "Enter AKS cluster name manually (or press Enter to skip): "
+        read -r selected_aks </dev/tty
+    else
+        echo ""
+        echo -e "${BOLD}${WHITE}Available AKS Clusters:${NC}"
+        i=1
+        local aks_names=()
+        while read -r aks; do
+            aks_names+=("$aks")
+            echo -e "  ${CYAN}$i${NC}) $aks"
+            ((i++))
+        done <<< "$aks_list"
+
+        echo ""
+        printf "Select AKS cluster: "
+        read -r aks_choice </dev/tty
+
+        selected_aks="${aks_names[$((aks_choice-1))]}"
+        print_success "Selected: $selected_aks"
+    fi
+
+    # ===== KEY VAULT =====
+    print_section "🔐 Select Key Vault (Optional)"
+    local kv_list
+    kv_list=$(az keyvault list --resource-group "$selected_rg" --query "[].name" -o tsv 2>/dev/null)
+
+    # If no KV in selected RG, search all RGs
+    if [[ -z "$kv_list" ]]; then
+        kv_list=$(az keyvault list --query "[].name" -o tsv 2>/dev/null)
+    fi
+
+    local selected_kv=""
+    if [[ -z "$kv_list" ]]; then
+        print_info "No Key Vault found"
+        printf "Enter Key Vault name manually (or press Enter to skip): "
+        read -r selected_kv </dev/tty
+    else
+        echo ""
+        echo -e "${BOLD}${WHITE}Available Key Vaults:${NC}"
+        echo -e "  ${CYAN}0${NC}) Skip (no Key Vault)"
+        i=1
+        local kv_names=()
+        while read -r kv; do
+            kv_names+=("$kv")
+            echo -e "  ${CYAN}$i${NC}) $kv"
+            ((i++))
+        done <<< "$kv_list"
+
+        echo ""
+        printf "Select Key Vault [0 to skip]: "
+        read -r kv_choice </dev/tty
+
+        if [[ "$kv_choice" != "0" && -n "$kv_choice" ]]; then
+            selected_kv="${kv_names[$((kv_choice-1))]}"
+            print_success "Selected: $selected_kv"
+        else
+            print_info "Skipped Key Vault"
+        fi
+    fi
+
+    # ===== SERVICE NAME =====
+    print_section "📦 Service Configuration"
+    local current_service=""
+    if [[ -f "$env_file" ]]; then
+        current_service=$(grep "^SERVICE_NAME=" "$env_file" 2>/dev/null | cut -d'=' -f2)
+    fi
+
+    printf "Enter service name [${current_service:-my-service}]: "
+    read -r service_name </dev/tty
+    service_name=${service_name:-${current_service:-my-service}}
+
+    printf "Enter Kubernetes namespace [${service_name}]: "
+    read -r namespace </dev/tty
+    namespace=${namespace:-$service_name}
+
+    # ===== WORKLOAD IDENTITY (Optional) =====
+    local workload_identity_client_id=""
+    if [[ -n "$selected_aks" ]]; then
+        print_section "🔑 Workload Identity (Optional)"
+        print_info "Checking for managed identities..."
+
+        # Try to get workload identity from AKS
+        local aks_identity
+        aks_identity=$(az aks show --name "$selected_aks" --resource-group "$selected_rg" \
+            --query "identityProfile.kubeletidentity.clientId" -o tsv 2>/dev/null)
+
+        if [[ -n "$aks_identity" && "$aks_identity" != "null" ]]; then
+            echo -e "Found AKS kubelet identity: ${CYAN}$aks_identity${NC}"
+            printf "Use this identity? [Y/n]: "
+            read -r use_identity </dev/tty
+            if [[ "$use_identity" != "n" && "$use_identity" != "N" ]]; then
+                workload_identity_client_id="$aks_identity"
+            fi
+        fi
+
+        if [[ -z "$workload_identity_client_id" ]]; then
+            printf "Enter Workload Identity Client ID (or press Enter to skip): "
+            read -r workload_identity_client_id </dev/tty
+        fi
+    fi
+
+    # ===== WRITE TO .ENV =====
+    print_section "💾 Writing Configuration"
+
+    # Create or update .env file
+    cat > "$env_file" << EOF
+# =============================================
+# XIOPS Configuration
+# Auto-generated by 'xiops setup'
+# =============================================
+
+# Service Configuration
+SERVICE_NAME=${service_name}
+
+# Azure Container Registry
+ACR_NAME=${selected_acr}
+
+# Azure Kubernetes Service
+AKS_CLUSTER_NAME=${selected_aks}
+RESOURCE_GROUP=${selected_rg}
+NAMESPACE=${namespace}
+
+# Azure Identity
+SUBSCRIPTION_ID=${selected_sub_id}
+TENANT_ID=${tenant_id}
+EOF
+
+    # Add optional values if set
+    if [[ -n "$selected_kv" ]]; then
+        echo "KEY_VAULT_NAME=${selected_kv}" >> "$env_file"
+    fi
+
+    if [[ -n "$workload_identity_client_id" ]]; then
+        echo "WORKLOAD_IDENTITY_CLIENT_ID=${workload_identity_client_id}" >> "$env_file"
+    fi
+
+    # Add placeholder for image tag
+    cat >> "$env_file" << 'EOF'
+
+# Image Tag (auto-generated if not set)
+# IMAGE_TAG=v01
+
+# AI Provider for error analysis (optional)
+# AI_PROVIDER=openai
+# OPENAI_API_KEY=your-key
+
+# =============================================
+# Application-specific settings below
+# Mark with # SECRET=YES or # SECRET=NO
+# =============================================
+EOF
+
+    print_success "Configuration written to .env"
+
+    # ===== SUMMARY =====
+    print_section "✅ Setup Complete"
+    echo ""
+    echo -e "${BOLD}${WHITE}Configuration Summary:${NC}"
+    echo -e "  Subscription:    ${CYAN}$selected_sub_name${NC}"
+    echo -e "  Resource Group:  ${CYAN}$selected_rg${NC}"
+    echo -e "  ACR:             ${CYAN}${selected_acr:-not set}${NC}"
+    echo -e "  AKS Cluster:     ${CYAN}${selected_aks:-not set}${NC}"
+    echo -e "  Key Vault:       ${CYAN}${selected_kv:-not set}${NC}"
+    echo -e "  Service Name:    ${CYAN}$service_name${NC}"
+    echo -e "  Namespace:       ${CYAN}$namespace${NC}"
+    echo -e "  Tenant ID:       ${CYAN}$tenant_id${NC}"
+    echo ""
+    print_info "Next steps:"
+    echo -e "  1. Review .env file"
+    echo -e "  2. Add application-specific variables"
+    echo -e "  3. Run ${CYAN}xiops build${NC} to build your image"
+    echo -e "  4. Run ${CYAN}xiops deploy${NC} to deploy to AKS"
+    echo ""
+
+    return 0
+}
