@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.1"
+VERSION="1.1.2"
 
 # Get the directory where xiops is installed
 XIOPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
