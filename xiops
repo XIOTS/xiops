@@ -309,6 +309,16 @@ cmd_deploy() {
     echo -e "   ${CYAN}$(get_full_image_path "$tag")${NC}"
     echo ""
 
+    # Show migration status
+    if [[ "${SKIP_MIGRATIONS}" == "true" ]]; then
+        echo -e "   ${BOLD}${YELLOW}⚠️  Migrations:${NC} ${DIM}Skipped (--skip-migrations)${NC}"
+    elif [[ -f "${XIOPS_PROJECT_DIR}/k8s/migration-job.yaml" ]] || [[ -d "${XIOPS_PROJECT_DIR}/alembic" ]]; then
+        echo -e "   ${BOLD}${GREEN}✓ Migrations:${NC} ${DIM}Will run before deployment${NC}"
+    else
+        echo -e "   ${BOLD}${DIM}ℹ  Migrations:${NC} ${DIM}Not configured${NC}"
+    fi
+    echo ""
+
     # Confirm
     if ! confirm "Proceed with deployment?"; then
         print_warning "Deployment cancelled by user"

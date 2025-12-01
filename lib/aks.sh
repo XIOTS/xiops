@@ -148,7 +148,7 @@ aks_wait_rollout() {
         local total_pods ready_pods
         if [[ -n "$pod_info" ]]; then
             total_pods=$(echo "$pod_info" | grep -c "." 2>/dev/null) || total_pods=0
-            ready_pods=$(echo "$pod_info" | grep -c "Running.*1/1" 2>/dev/null) || ready_pods=0
+            ready_pods=$(echo "$pod_info" | grep -c "1/1.*Running" 2>/dev/null) || ready_pods=0
         else
             total_pods=0
             ready_pods=0
