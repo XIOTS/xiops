@@ -22,12 +22,61 @@ source "${XIOPS_DIR}/lib/migrate.sh"
 source "${XIOPS_DIR}/lib/ai.sh"
 
 # =============================================
+# Check for updates (non-blocking, runs every time)
+# =============================================
+check_for_updates() {
+    # Skip if user disabled update checks
+    if [[ "${XIOPS_SKIP_UPDATE_CHECK:-}" == "1" ]]; then
+        return 0
+    fi
+
+    # Check for latest version (timeout after 2 seconds, run in background)
+    # This won't slow down xiops since it runs in background
+    (
+        local latest_version=$(curl -s --max-time 2 \
+            "https://api.github.com/repos/XIOTS/xiops/releases/latest" 2>/dev/null | \
+            grep -o '"tag_name": "v[^"]*"' | \
+            head -1 | \
+            sed 's/"tag_name": "v\(.*\)"/\1/' || echo "")
+
+        if [[ -n "$latest_version" && "$latest_version" != "$VERSION" ]]; then
+            # Version comparison: check if latest is newer
+            if [[ "$(printf '%s\n' "$VERSION" "$latest_version" | sort -V | head -n1)" != "$latest_version" ]]; then
+                echo ""
+                echo -e "${YELLOW}╭─────────────────────────────────────────────────────────────╮${NC}"
+                echo -e "${YELLOW}│${NC}  ${BOLD}Update Available!${NC}                                        ${YELLOW}│${NC}"
+                echo -e "${YELLOW}│${NC}  ${DIM}Current version:${NC} ${VERSION}                                    ${YELLOW}│${NC}"
+                echo -e "${YELLOW}│${NC}  ${DIM}Latest version:${NC}  ${GREEN}${latest_version}${NC}                                    ${YELLOW}│${NC}"
+                echo -e "${YELLOW}│${NC}                                                             ${YELLOW}│${NC}"
+                echo -e "${YELLOW}│${NC}  ${CYAN}brew upgrade xiots/xiops/xiops${NC}                           ${YELLOW}│${NC}"
+                echo -e "${YELLOW}│${NC}                                                             ${YELLOW}│${NC}"
+                echo -e "${YELLOW}│${NC}  ${DIM}Release notes:${NC} https://github.com/XIOTS/xiops/releases  ${YELLOW}│${NC}"
+                echo -e "${YELLOW}╰─────────────────────────────────────────────────────────────╯${NC}"
+                echo ""
+            fi
+        fi
+    ) &
+}
+
+# Run update check on every command (non-blocking)
+check_for_updates
+
+# =============================================
 # Help text
 # =============================================
 show_help() {
     echo ""
-    echo -e "${BOLD}${CYAN}XIOPS${NC} - Project-Agnostic Deployment CLI for Azure"
-    echo -e "${DIM}Version ${VERSION}${NC}"
+    echo -e "${CYAN}"
+    cat << "EOF"
+    ██╗  ██╗██╗ ██████╗ ██████╗ ███████╗
+    ╚██╗██╔╝██║██╔═══██╗██╔══██╗██╔════╝
+     ╚███╔╝ ██║██║   ██║██████╔╝███████╗
+     ██╔██╗ ██║██║   ██║██╔═══╝ ╚════██║
+    ██╔╝ ██╗██║╚██████╔╝██║     ███████║
+    ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═╝     ╚══════╝
+EOF
+    echo -e "${NC}"
+    echo -e "${DIM}Project-Agnostic Deployment CLI for Azure  •  Version ${VERSION}${NC}"
     echo ""
     echo -e "${BOLD}USAGE:${NC}"
     echo "    xiops <command> [options]"
@@ -148,7 +197,20 @@ show_help() {
 # Version
 # =============================================
 show_version() {
-    echo "xiops version ${VERSION}"
+    echo ""
+    echo -e "${CYAN}"
+    cat << "EOF"
+    ██╗  ██╗██╗ ██████╗ ██████╗ ███████╗
+    ╚██╗██╔╝██║██╔═══██╗██╔══██╗██╔════╝
+     ╚███╔╝ ██║██║   ██║██████╔╝███████╗
+     ██╔██╗ ██║██║   ██║██╔═══╝ ╚════██║
+    ██╔╝ ██╗██║╚██████╔╝██║     ███████║
+    ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═╝     ╚══════╝
+EOF
+    echo -e "${NC}"
+    echo -e "${DIM}Project-Agnostic Deployment CLI for Azure${NC}"
+    echo -e "${BOLD}Version ${VERSION}${NC}"
+    echo ""
 }
 
 # =============================================
