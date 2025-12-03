@@ -171,25 +171,60 @@ prompt_input() {
 # =============================================
 extract_version_number() {
     local tag="$1"
-    # Extract numeric part from v## pattern
-    if [[ "$tag" =~ ^v([0-9]+) ]]; then
-        echo "${BASH_REMATCH[1]}"
-    else
-        echo ""
-    fi
+    # Extract version number from tag (supports v01, v01.02, v01.02.03, etc.)
+    # Remove 'v' prefix if present
+    tag="${tag#v}"
+    echo "$tag"
 }
 
 increment_version() {
     local current="$1"
-    local next=$((10#$current + 1))
-    printf "%02d" "$next"
+
+    # Handle semantic versioning (e.g., 01.02.03)
+    if [[ "$current" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+        # Three-part version (major.minor.patch) - increment patch
+        local major="${BASH_REMATCH[1]}"
+        local minor="${BASH_REMATCH[2]}"
+        local patch="${BASH_REMATCH[3]}"
+        # Strip all leading zeros and do arithmetic
+        local patch_num=$((10#$patch))
+        local next_patch=$((patch_num + 1))
+        # Pad with leading zeros to match original length
+        local pad_length=${#patch}
+        while [[ ${#next_patch} -lt $pad_length ]]; do
+            next_patch="0${next_patch}"
+        done
+        echo "${major}.${minor}.${next_patch}"
+    elif [[ "$current" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+        # Two-part version (major.minor) - increment minor
+        local major="${BASH_REMATCH[1]}"
+        local minor="${BASH_REMATCH[2]}"
+        local minor_num=$((10#$minor))
+        local next_minor=$((minor_num + 1))
+        local pad_length=${#minor}
+        while [[ ${#next_minor} -lt $pad_length ]]; do
+            next_minor="0${next_minor}"
+        done
+        echo "${major}.${next_minor}"
+    elif [[ "$current" =~ ^([0-9]+)$ ]]; then
+        # Single number - increment it
+        local num=$((10#$current))
+        local next=$((num + 1))
+        local pad_length=${#current}
+        while [[ ${#next} -lt $pad_length ]]; do
+            next="0${next}"
+        done
+        echo "$next"
+    else
+        # Unknown format - just return incremented single digit
+        echo "01"
+    fi
 }
 
 format_version_tag() {
     local num="$1"
-    # Pad with leading zero if needed
-    local padded=$(printf "%02d" "$((10#$num))" 2>/dev/null || echo "$num")
-    echo "v${padded}"
+    # Just prepend 'v' - keep the user's format (01, 01.02, 01.02.03, etc.)
+    echo "v${num}"
 }
 
 # =============================================

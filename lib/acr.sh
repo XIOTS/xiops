@@ -152,8 +152,8 @@ get_deployed_tag() {
 prompt_image_tag() {
     local current_tag="$1"
     local suggested_num="01"
+    local suggested_tag="v01"
     local current_num
-    local next_num
 
     print_section "🏷️  Enter New Image Tag" >&2
     echo "" >&2
@@ -163,22 +163,31 @@ prompt_image_tag() {
         current_num=$(extract_version_number "$current_tag")
         if [[ -n "$current_num" ]]; then
             suggested_num=$(increment_version "$current_num")
+            suggested_tag="v${suggested_num}"
         fi
     fi
 
-    echo -e "   ${DIM}Image tag format:${NC} ${CYAN}v${NC}${GREEN}<number>${NC}" >&2
-    echo -e "   ${DIM}Suggested next:${NC} ${GREEN}${suggested_num}${NC} ${DIM}(will become v${suggested_num})${NC}" >&2
+    echo -e "   ${DIM}Image tag format:${NC} ${CYAN}v<version>${NC} ${DIM}(e.g., v01, v01.02, v01.02.03)${NC}" >&2
+    if [[ -n "$current_tag" ]]; then
+        echo -e "   ${DIM}Current deployed:${NC} ${YELLOW}${current_tag}${NC}" >&2
+    fi
+    echo -e "   ${DIM}Suggested next:${NC} ${GREEN}${suggested_tag}${NC}" >&2
     echo "" >&2
-    echo -ne "   ${BOLD}${WHITE}Enter version number ${NC}${DIM}[${suggested_num}]${NC}${BOLD}${WHITE}: v${NC}" >&2
-    read -r user_num </dev/tty
+    echo -ne "   ${BOLD}${WHITE}Enter image tag ${NC}${DIM}[${suggested_tag}]${NC}${BOLD}${WHITE}: ${NC}" >&2
+    read -r user_input </dev/tty
 
     # Use suggested if empty
-    if [[ -z "$user_num" ]]; then
-        user_num="$suggested_num"
+    if [[ -z "$user_input" ]]; then
+        echo "$suggested_tag"
+        return
     fi
 
-    # Format and return tag
-    format_version_tag "$user_num"
+    # If user input doesn't start with 'v', prepend it
+    if [[ ! "$user_input" =~ ^v ]]; then
+        user_input="v${user_input}"
+    fi
+
+    echo "$user_input"
 }
 
 # =============================================
